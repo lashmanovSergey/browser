@@ -1,0 +1,223 @@
+import socket
+import sys
+import ssl
+from pathlib import Path 
+
+class Browser:
+    def __init__(self):
+        # browser settings
+        self.user_agent = 'browser.py'
+
+        self.default_request_headers = {
+            'Connection': 'keep-alive'
+        }
+
+        self.entities = {
+            '&lt;': '<',
+            '&gt;': '>'
+        }
+
+        # dictionary to keep alive connections
+        self.connections = {}
+
+        # dictionary to keep counter of redirects for each host
+        self.redirects_loop_prevention = {}
+        self.critical_number_of_redirects = 5
+        
+    def process_url(self, url):
+        url = self.parse_url(url)
+
+        print(url)
+
+        if url['scheme'] == 'http' or url['scheme'] == 'https':
+            self.make_request(url)
+        elif url['scheme'] == 'file':
+            self.load_filesystem(url)
+
+    def load_filesystem(self, url):
+        if url['host'] != '':
+            print('[CONSOLE] Cannot open other\'s filesystem')
+            return
+
+        root_dir = Path('/')
+        path = root_dir.joinpath(url['path'])
+
+        if not path.exists():
+            print('[CONSOLE] Path does not exist')
+            return
+
+        if path.is_file():
+            file = open(path, 'r')
+            content = file.read()
+            print(content)
+        elif path.is_dir():
+            for item in path.iterdir():
+                print(item)
+    
+    def show_content(self, content):
+        # it takes content that shows without tags
+        # and automatically replaces all entities with their values
+
+        in_tag = False
+        content_without_tags = ''
+
+        # removing all tags
+        for c in content:
+            if c == '<':
+                in_tag = True
+            elif c == '>':
+                in_tag = False
+            elif in_tag == False:
+                content_without_tags += c
+        
+        # entitiy replacement
+        for entity, value in self.entities.items():
+            while entity in content_without_tags:
+                content_without_tags = content_without_tags.replace(entity, value)
+        
+        print(content_without_tags)
+
+    def make_request(self, url):
+        # creating request body
+        r = 'GET /{} HTTP/1.1\r\n'.format(url['path'])
+        r += 'Host: {}\r\n'.format(url['host'])
+        r += 'Connection: {}\r\n'.format('keep-alive')
+        r += 'User-Agent: {}\r\n'.format(self.user_agent)
+        r += '\r\n'
+
+        # take already existed socket or create new one
+        if url['host'] not in self.connections:
+            s = self.create_socket(url)
+            self.connections[url['host']] = s
+            print('[CONSOLE] New connection to {} has been established'.format(url['host']))
+        else:
+            s = self.connections[url['host']]
+            print('[CONSOLE] Connection with {} has been established'.format(url['host']))
+
+        s.send(r.encode('utf-8'))
+        print('[CONSOLE] Request has been sent to {}'.format(url['host']))
+
+        response = s.makefile('rb', encoding='utf-8', newline='\r\n')
+        print('[CONSOLE] Successfully got response from {}'.format(url['host']))
+
+        status_line = response.readline().decode('utf-8')
+        version, status, explanation = status_line.split(' ', 2)
+        print('[CONSOLE] {} {} {}'.format(version, status, explanation))
+
+        # read headers line by line and keep them in the dictionary
+        response_headers = {}
+        while True:
+            line = response.readline().decode('utf-8')
+            if line == '\r\n':
+                break
+            header_name, header_value = line.split(':', 1)
+            response_headers[header_name.casefold()] = header_value.strip().casefold()
+
+        response_headers['connection'] = response_headers['connection'] if 'connection' in response_headers else 'close'
+
+        # if server wants to close connection we do it
+        if response_headers['connection'] == 'close':
+            self.connections[url['host']].close()
+            self.connections.pop(url['host'])
+
+        if status == '301': # process redirects
+            self.follow_redirect(url['scheme'], url['host'], response_headers['location'])
+            return
+
+        # reading response body
+        if 'content-length' in response_headers:
+            content_length = int(response_headers['content-length'])
+            body_bytes = response.read(content_length)
+            body = body_bytes.decode('utf-8')
+        elif 'transfer-encoding' in response_headers:
+            body = ''
+            while True:
+                chunk_length_encoded = response.readline()
+                chunk_length = int(chunk_length_encoded.decode('utf-8').strip(), 16)
+
+                if chunk_length == 0:
+                    break
+                
+                chunk_encoded = response.read(chunk_length + len('\r\n'))
+                chunk = chunk_encoded.decode('utf-8')
+
+                body += chunk
+        
+        # update counter because we finished with redirects
+        self.redirects_loop_prevention[url['host']] = 0
+        
+        self.show_content(body)
+    
+    def follow_redirect(self, scheme, host, url):
+        print('[CONSOLE] Following redirect to {}'.format(url))
+
+        if url.startswith('/'):
+            url = scheme + '://' + host + url
+        
+        url = self.parse_url(url)
+
+        assert url['scheme'] in ['https', 'http']
+
+        if url['host'] in self.redirects_loop_prevention:
+            self.redirects_loop_prevention[url['host']] += 1
+        else:
+            self.redirects_loop_prevention[url['host']] = 1
+        
+        if self.redirects_loop_prevention[url['host']] >= self.critical_number_of_redirects:
+            print('[CONSOLE] Do not follow redirects due to security')
+            return
+        
+        self.make_request(url)
+
+        
+                
+    def create_socket(self, url):
+        # returns created socket with established connection
+
+        socket_address_family = socket.AF_INET
+        socket_type = socket.SOCK_STREAM
+        socket_proto = socket.IPPROTO_IP
+
+        s = socket.socket(socket_address_family, socket_type, socket_proto)
+        s.connect((url['host'], url['port']))
+
+        # make transitions encrypted/secure
+        if url['scheme'] == 'https':
+            context = ssl.create_default_context()
+            s = context.wrap_socket(s, server_hostname=url['host'])
+
+        return s
+
+    def parse_url(self, url):
+        # returns dictionary with the following keys:
+        # 1. scheme
+        # 2. host
+        # 3. port
+        # 4. path
+
+        scheme, authority = url.split('://')
+        host, path = authority.split('/', 1)
+
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+        else:
+            port = 8080
+        
+        if ':' in host:
+            host, port = host.split(':', 1)
+        
+        return {
+            'scheme': scheme,
+            'host': host,
+            'port': int(port),
+            'path': path
+        }
+
+if __name__ == "__main__":
+    # Usage:
+    # python browser.py <url>
+
+    browser = Browser()
+    browser.process_url(sys.argv[1])
