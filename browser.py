@@ -1,6 +1,8 @@
 import socket
 import sys
 import ssl
+import datetime
+import gzip
 from pathlib import Path 
 
 # Self-created functions
@@ -46,14 +48,12 @@ class Browser:
 
     def load_filesystem(self, url):
         if url['host'] != '':
-            print('[CONSOLE] Cannot open other\'s filesystem')
             return
 
         root_dir = Path('/')
         path = root_dir.joinpath(url['path'])
 
         if not path.exists():
-            print('[CONSOLE] Path does not exist')
             return
 
         if path.is_file():
@@ -96,31 +96,38 @@ class Browser:
         r += 'Host: {}\r\n'.format(parsed_url['host'])
         r += 'Connection: {}\r\n'.format('keep-alive')
         r += 'User-Agent: {}\r\n'.format(self.user_agent)
+        r += 'Accept-Encoding: {}\r\n'.format('gzip')
         r += '\r\n'
 
         # take already existed socket or create new one
         if parsed_url['host'] not in self.connections:
             s = self.create_socket(parsed_url)
             self.connections[parsed_url['host']] = s
-            print('[CONSOLE] New connection to {} has been established'.format(parsed_url['host']))
         else:
             s = self.connections[parsed_url['host']]
-            print('[CONSOLE] Connection with {} has been established'.format(parsed_url['host']))
 
         s.send(r.encode('utf-8'))
-        print('[CONSOLE] Request has been sent to {}'.format(parsed_url['host']))
+
+        with open('logs.txt', 'a') as logs:
+            logs.write(f'[{str(datetime.datetime.now())}]\r\n')
+            logs.write(r + '\r\n')
 
         response = s.makefile('rb', encoding='utf-8', newline='\r\n')
-        print('[CONSOLE] Successfully got response from {}'.format(parsed_url['host']))
-
         status_line = response.readline().decode('utf-8')
         version, status, explanation = status_line.split(' ', 2)
-        print('[CONSOLE] {} {} {}'.format(version, status, explanation))
+
+        with open('logs.txt', 'a') as logs:
+            logs.write(f'[{str(datetime.datetime.now())}]\r\n')
+            logs.write(status_line)
 
         # read headers line by line and keep them in the dictionary
         response_headers = {}
         while True:
             line = response.readline().decode('utf-8')
+
+            with open('logs.txt', 'a') as logs:
+                logs.write(line)
+
             if line == '\r\n':
                 break
             header_name, header_value = line.split(':', 1)
@@ -133,7 +140,7 @@ class Browser:
             self.connections[parsed_url['host']].close()
             self.connections.pop(parsed_url['host'])
 
-        if status == '301': # process redirects
+        if status == '301' or status == '302': # process redirects
             self.follow_redirect(parsed_url['scheme'], parsed_url['host'], response_headers['location'])
             return
 
@@ -141,7 +148,14 @@ class Browser:
         if 'content-length' in response_headers:
             content_length = int(response_headers['content-length'])
             body_bytes = response.read(content_length)
+            
+            # Decompressing of data
+            if 'content-encoding' in response_headers and\
+                'gzip' in response_headers['content-encoding']:
+                body_bytes = gzip.decompress(body_bytes)
+
             body = body_bytes.decode('utf-8')
+
         elif 'transfer-encoding' in response_headers:
             body = ''
             while True:
@@ -152,13 +166,19 @@ class Browser:
                     break
                 
                 chunk_encoded = response.read(chunk_length + len('\r\n'))
+
+                # Decompressing of data
+                if 'content-encoding' in response_headers and\
+                    'gzip' in response_headers['content-encoding']:
+                    chunk_encoded = chunk_encoded.strip()
+                    chunk_encoded = gzip.decompress(chunk_encoded)
+
                 chunk = chunk_encoded.decode('utf-8')
 
                 body += chunk
         
         # caching page for optimization
         if 'cache-control' in response_headers:
-            print('[CONSOLE] Caching {}'.format(url))
             cache_control = 'cache-control' + ':' + response_headers['cache-control']
         else:
             cache_control = 'cache-control' + ':' + 'no-cache'
@@ -172,8 +192,6 @@ class Browser:
         self.show_content(body)
     
     def follow_redirect(self, scheme, host, url):
-        print('[CONSOLE] Following redirect to {}'.format(url))
-
         if url.startswith('/'):
             url = scheme + '://' + host + url
         
@@ -187,7 +205,6 @@ class Browser:
             self.redirects_loop_prevention[parsed_url['host']] = 1
         
         if self.redirects_loop_prevention[parsed_url['host']] >= self.critical_number_of_redirects:
-            print('[CONSOLE] Do not follow redirects due to security')
             return
         
         self.make_request(url)
@@ -214,5 +231,4 @@ if __name__ == "__main__":
     # python browser.py <url>
 
     browser = Browser()
-    browser.process_url(sys.argv[1])
     browser.process_url(sys.argv[1])
