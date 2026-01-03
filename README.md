@@ -1,3 +1,3 @@
 ### Usage:
 
-python3 browser.py <url>
+python3 browser.py \<url\>
