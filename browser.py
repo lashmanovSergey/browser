@@ -2,18 +2,37 @@ import socket
 import sys
 import ssl
 import datetime
+import tkinter
 import gzip
 from pathlib import Path 
 
 # Self-created functions
 from instruments import parse_url
+from instruments import layout
 import cache
 
+WIDTH, HEIGHT = 800, 600
+SCROLL_STEP = 100
+HSTEP, VSTEP = 13, 18
 
 class Browser:
     def __init__(self):
         # browser settings
         self.user_agent = 'browser.py'
+
+        self.scroll = 0
+
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(
+            self.window,
+            height=HEIGHT,
+            width=WIDTH
+        )
+        self.canvas.pack()
+        self.display_list = []
+
+        self.window.bind('<Down>', self.scrolldown)
+        self.window.bind('<Up>', self.scrollup)
 
         self.default_request_headers = {
             'Connection': 'keep-alive'
@@ -34,6 +53,14 @@ class Browser:
         # dictionary to keep counter of redirects for each host
         self.redirects_loop_prevention = {}
         self.critical_number_of_redirects = 5
+
+    def scrolldown(self, e):
+        self.scroll += SCROLL_STEP
+        self.draw()
+    
+    def scrollup(self, e):
+        self.scroll = max(self.scroll - SCROLL_STEP, 0)
+        self.draw()
 
     def process_url(self, url):
         parsed_url = parse_url(url)
@@ -63,8 +90,8 @@ class Browser:
         elif path.is_dir():
             for item in path.iterdir():
                 print(item)
-    
-    def show_content(self, content):
+
+    def lex(self, content):
         # it takes content that shows without tags
         # and automatically replaces all entities with their values
 
@@ -85,7 +112,26 @@ class Browser:
             while entity in content_without_tags:
                 content_without_tags = content_without_tags.replace(entity, value)
         
-        print(content_without_tags)
+        return content_without_tags
+        
+    
+    def show_content(self, content):
+        text = self.lex(content)
+        self.display_list = layout(text, WIDTH)
+        self.draw()
+    
+    def draw(self):
+        self.canvas.delete('all')
+        for x, y, c in self.display_list:
+
+            if y > self.scroll + HEIGHT:
+                continue
+            if y + VSTEP < self.scroll:
+                continue
+
+            self.canvas.create_text(x, y - self.scroll, text=c)
+            
+            
 
     def make_request(self, url):
 
@@ -140,7 +186,8 @@ class Browser:
             self.connections[parsed_url['host']].close()
             self.connections.pop(parsed_url['host'])
 
-        if status == '301' or status == '302': # process redirects
+        # process redirects
+        if status == '301' or status == '302':
             self.follow_redirect(parsed_url['scheme'], parsed_url['host'], response_headers['location'])
             return
 
@@ -230,5 +277,10 @@ if __name__ == "__main__":
     # Usage:
     # python browser.py <url>
 
+    if (len(sys.argv) != 2):
+        print('Usage: python browser.py <url>')
+        exit()
+
     browser = Browser()
     browser.process_url(sys.argv[1])
+    tkinter.mainloop()

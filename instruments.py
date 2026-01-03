@@ -51,3 +51,18 @@ def parse_header(header):
     return {
         header_name: values
     }
+
+def layout(text, width, h_step = 13, v_step = 18):
+    display_list = []
+    cursor_x, cursor_y = h_step, v_step
+
+    for c in text:
+        display_list.append((cursor_x, cursor_y, c))
+        cursor_x += h_step
+
+        # Provides dynamic line text showing
+        if cursor_x >= width - h_step:
+            cursor_x = h_step
+            cursor_y += v_step
+
+    return display_list
